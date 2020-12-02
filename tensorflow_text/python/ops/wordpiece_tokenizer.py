@@ -19,6 +19,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import re
+
 from tensorflow.python.compat import compat
 from tensorflow.python.eager import monitoring
 from tensorflow.python.framework import dtypes
@@ -26,8 +28,12 @@ from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import lookup_ops
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import string_ops
+from tensorflow.python.ops.ragged import ragged_functional_ops
+from tensorflow.python.ops.ragged import ragged_string_ops
 from tensorflow.python.ops.ragged import ragged_tensor
 from tensorflow.python.ops.ragged.ragged_tensor import RaggedTensor
+from tensorflow_text.python.ops.tokenization import Detokenizer
 from tensorflow_text.python.ops.tokenization import TokenizerWithOffsets
 
 # pylint: disable=g-bad-import-order
@@ -40,7 +46,7 @@ _tf_text_wordpiece_tokenizer_op_create_counter = monitoring.Counter(
     'Counter for number of WordpieceTokenizers created in Python.')
 
 
-class WordpieceTokenizer(TokenizerWithOffsets):
+class WordpieceTokenizer(TokenizerWithOffsets, Detokenizer):
   """Tokenizes a tensor of UTF-8 string tokens into subword pieces."""
 
   def __init__(self,
@@ -218,3 +224,43 @@ class WordpieceTokenizer(TokenizerWithOffsets):
       ends = from_row_partition(ends, row_splits, validate=False)
 
       return wordpieces, starts, ends
+
+  def detokenize(self, token_ids):
+    """Convert a Tensor or RaggedTensor of wordpiece IDs to string-words.
+
+    Args:
+      token_ids: A `RaggedTensor` or `Tensor` with an int dtype.
+        * A `Tensor` should have dimensions `(batch, padded-wordpiece)`.
+        * A `RaggedTensor` sould have dimensions `(batch, ragged-wordpiece)`
+          or `(batch, ragged-words, ragged-wordpiece)`.
+
+    Returns:
+      A `RaggedTensor` with dtype `string` and shape `(batch, ragged-words)`.
+    """
+    # Create the inverse_vocabulary table if it is not available.
+    inverse_vocab_table = getattr(self, '_inverse_vocab_table', None)
+    if inverse_vocab_table is None:
+      vocab, ids = self._vocab_lookup_table._table.export()  # pylint: disable=protected-access
+      initializer = lookup_ops.KeyValueTensorInitializer(keys=ids, values=vocab)
+      inverse_vocab_table = lookup_ops.StaticHashTable(
+          initializer=initializer, default_value=self._unknown_token)
+      self._inverse_vocab_table = inverse_vocab_table
+
+    # Lookup the text tokens and join them along the innermost axis.
+    txt_tokens = ragged_functional_ops.map_flat_values(
+        inverse_vocab_table.lookup, token_ids)
+    words = string_ops.reduce_join_v2(txt_tokens, axis=-1, separator=' ')
+
+    # Collapse " ##" in all strings to make words.
+    # If `token_ids` has a `subword` axis then each item in `words` will be
+    # a word. If there was no `subword` axis then `words` contains
+    # space-separated words
+    words = string_ops.regex_replace(
+        words, ' ' + re.escape(self._suffix_indicator), '')
+
+    if not isinstance(token_ids, RaggedTensor) or token_ids.ragged_rank < 2:
+      # Drop leading and trailing whitespace.
+      words = string_ops.regex_replace(words, '^ +| +$', '')
+      # Split the space-separated words into a ragged-words axis.
+      words = ragged_string_ops.string_split_v2(words, sep=' ')
+    return words

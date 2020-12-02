@@ -435,6 +435,38 @@ class BertTokenizerTest(test_util.TensorFlowTestCase, parameterized.TestCase):
       stripped_prefix = expected_rt.with_flat_values(stripped_prefix_flat)
       self.assertAllEqual(extracted_wordpieces, stripped_prefix)
 
+  @test_util.run_in_graph_and_eager_modes
+  def test_detokenize(self):
+    table = _create_table(_VOCAB + [b''], 2)
+
+    tokenizer = bert_tokenizer.BertTokenizer(table)
+
+    text_inputs = [
+        _utf8(u'taste the rustisc indiefrost'),
+        _utf8(u'Han Kuo-yu (韓國食)🤔'),
+    ]
+    expected_result = [
+        _utf8(u'taste the rustisc indiefrost'),
+        _utf8(u'[UNK] [UNK] - yu ( 韓 國 食 ) 🤔'),
+    ]
+
+    tokens = tokenizer.tokenize(text_inputs)
+
+    round_trip1 = tokenizer.detokenize(tokens)
+    round_trip2 = tokenizer.detokenize(tokens.merge_dims(-2, -1))
+    round_trip3 = tokenizer.detokenize(
+        tokens
+        .merge_dims(-2, -1)
+        # len(_VOCAB) is ""
+        .to_tensor(default_value=len(_VOCAB)))
+
+    self.evaluate(table.initializer)
+    self.evaluate(tokenizer._wordpiece_tokenizer._inverse_vocab_table._init_op)
+
+    self.assertAllEqual(round_trip1, expected_result)
+    self.assertAllEqual(round_trip2, expected_result)
+    self.assertAllEqual(round_trip3, expected_result)
+
 
 if __name__ == '__main__':
   test.main()

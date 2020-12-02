@@ -22,6 +22,7 @@ from __future__ import print_function
 
 from absl.testing import parameterized
 from tensorflow.python.compat import compat
+
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
@@ -541,6 +542,40 @@ class WordpieceOpTest(test_util.TensorFlowTestCase, parameterized.TestCase):
     )
     subwords = tokenizer.tokenize(tokens)
     self.assertAllEqual(subwords, expected_subwords)
+
+  @test_util.run_in_graph_and_eager_modes
+  def testDetokenize(self):
+    table = _CreateTable(_MIXED_LANG_VOCAB + [b""], 2)
+
+    tokenizer = WordpieceTokenizer(table)
+
+    words = ragged_factory_ops.constant(
+        [[b"hello", b"there", b"my", b"name", b"is", b"treadness"],
+         [b"whatchamacallit?", b"you", b"said"],
+         [_Utf8(u"大"), _Utf8(u"易")]])
+
+    subwords_ids = tokenizer.tokenize(words)
+
+    # Detokeinzer input shape is (batch, ragged-words, ragged-wordpieces)
+    words_output = tokenizer.detokenize(subwords_ids)
+
+    self.evaluate(table.initializer)
+    self.evaluate(tokenizer._inverse_vocab_table._init_op)
+
+    self.assertAllEqual(words_output, words)
+
+    # Detokeinzer input shape is (batch, ragged-wordpieces)
+    subwords_id_seqs = subwords_ids.merge_dims(-2, -1)
+    words_output = tokenizer.detokenize(subwords_id_seqs)
+    self.assertAllEqual(words_output, words)
+
+    # Detokeinzer input shape is (batch, padded-wordpieces)
+    words_output = tokenizer.detokenize(
+        subwords_ids
+        .merge_dims(-2, -1)
+        # len(_MIXED_LANG_VOCAB) is ""
+        .to_tensor(default_value=len(_MIXED_LANG_VOCAB)))
+    self.assertAllEqual(words_output, words)
 
 
 if __name__ == "__main__":
